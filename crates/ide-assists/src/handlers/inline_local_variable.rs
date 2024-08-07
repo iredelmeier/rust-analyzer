@@ -1,10 +1,8 @@
-use either::Either;
 use hir::{PathResolution, Semantics};
 use ide_db::{
-    base_db::FileId,
     defs::Definition,
-    search::{FileReference, UsageSearchResult},
-    RootDatabase,
+    search::{FileReference, FileReferenceNode, UsageSearchResult},
+    EditionedFileId, RootDatabase,
 };
 use syntax::{
     ast::{self, AstNode, AstToken, HasName},
@@ -64,7 +62,7 @@ pub(crate) fn inline_local_variable(acc: &mut Assists, ctx: &AssistContext<'_>) 
     let wrap_in_parens = references
         .into_iter()
         .filter_map(|FileReference { range, name, .. }| match name {
-            ast::NameLike::NameRef(name) => Some((range, name)),
+            FileReferenceNode::NameRef(name) => Some((range, name)),
             _ => None,
         })
         .map(|(range, name_ref)| {
@@ -97,8 +95,7 @@ pub(crate) fn inline_local_variable(acc: &mut Assists, ctx: &AssistContext<'_>) 
             );
             let parent = matches!(
                 usage_parent,
-                ast::Expr::CallExpr(_)
-                    | ast::Expr::TupleExpr(_)
+                ast::Expr::TupleExpr(_)
                     | ast::Expr::ArrayExpr(_)
                     | ast::Expr::ParenExpr(_)
                     | ast::Expr::ForExpr(_)
@@ -152,7 +149,7 @@ fn inline_let(
     sema: &Semantics<'_, RootDatabase>,
     let_stmt: ast::LetStmt,
     range: TextRange,
-    file_id: FileId,
+    file_id: EditionedFileId,
 ) -> Option<InlineData> {
     let bind_pat = match let_stmt.pat()? {
         ast::Pat::IdentPat(pat) => pat,
@@ -187,7 +184,7 @@ fn inline_usage(
     sema: &Semantics<'_, RootDatabase>,
     path_expr: ast::PathExpr,
     range: TextRange,
-    file_id: FileId,
+    file_id: EditionedFileId,
 ) -> Option<InlineData> {
     let path = path_expr.path()?;
     let name = path.as_single_name_ref()?;
@@ -205,11 +202,13 @@ fn inline_usage(
         return None;
     }
 
-    // FIXME: Handle multiple local definitions
-    let bind_pat = match local.source(sema.db).value {
-        Either::Left(ident) => ident,
-        _ => return None,
+    let sources = local.sources(sema.db);
+    let [source] = sources.as_slice() else {
+        // Not applicable with locals with multiple definitions (i.e. or patterns)
+        return None;
     };
+
+    let bind_pat = source.as_ident_pat()?;
 
     let let_stmt = ast::LetStmt::cast(bind_pat.syntax().parent()?)?;
 
@@ -947,6 +946,24 @@ struct S;
 fn f() {
     let S$0 = S;
     S;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn test_inline_closure() {
+        check_assist(
+            inline_local_variable,
+            r#"
+fn main() {
+    let $0f = || 2;
+    let _ = f();
+}
+"#,
+            r#"
+fn main() {
+    let _ = (|| 2)();
 }
 "#,
         );

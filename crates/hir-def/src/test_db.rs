@@ -1,17 +1,15 @@
 //! Database used for testing `hir_def`.
 
-use std::{
-    fmt, panic,
-    sync::{Arc, Mutex},
-};
+use std::{fmt, panic, sync::Mutex};
 
 use base_db::{
-    salsa, AnchoredPath, CrateId, FileId, FileLoader, FileLoaderDelegate, FilePosition,
-    SourceDatabase, Upcast,
+    salsa::{self, Durability},
+    AnchoredPath, CrateId, FileLoader, FileLoaderDelegate, SourceDatabase, Upcast,
 };
-use hir_expand::{db::AstDatabase, InFile};
-use stdx::hash::NoHashHashSet;
+use hir_expand::{db::ExpandDatabase, files::FilePosition, InFile};
+use span::{EditionedFileId, FileId};
 use syntax::{algo, ast, AstNode};
+use triomphe::Arc;
 
 use crate::{
     db::DefDatabase,
@@ -21,9 +19,9 @@ use crate::{
 };
 
 #[salsa::database(
-    base_db::SourceDatabaseExtStorage,
+    base_db::SourceRootDatabaseStorage,
     base_db::SourceDatabaseStorage,
-    hir_expand::db::AstDatabaseStorage,
+    hir_expand::db::ExpandDatabaseStorage,
     crate::db::InternDatabaseStorage,
     crate::db::DefDatabaseStorage
 )]
@@ -35,20 +33,21 @@ pub(crate) struct TestDB {
 impl Default for TestDB {
     fn default() -> Self {
         let mut this = Self { storage: Default::default(), events: Default::default() };
-        this.set_enable_proc_attr_macros(true);
+        this.setup_syntax_context_root();
+        this.set_expand_proc_attr_macros_with_durability(true, Durability::HIGH);
         this
     }
 }
 
-impl Upcast<dyn AstDatabase> for TestDB {
-    fn upcast(&self) -> &(dyn AstDatabase + 'static) {
-        &*self
+impl Upcast<dyn ExpandDatabase> for TestDB {
+    fn upcast(&self) -> &(dyn ExpandDatabase + 'static) {
+        self
     }
 }
 
 impl Upcast<dyn DefDatabase> for TestDB {
     fn upcast(&self) -> &(dyn DefDatabase + 'static) {
-        &*self
+        self
     }
 }
 
@@ -70,13 +69,10 @@ impl fmt::Debug for TestDB {
 impl panic::RefUnwindSafe for TestDB {}
 
 impl FileLoader for TestDB {
-    fn file_text(&self, file_id: FileId) -> Arc<String> {
-        FileLoaderDelegate(self).file_text(file_id)
-    }
     fn resolve_path(&self, path: AnchoredPath<'_>) -> Option<FileId> {
         FileLoaderDelegate(self).resolve_path(path)
     }
-    fn relevant_crates(&self, file_id: FileId) -> Arc<NoHashHashSet<CrateId>> {
+    fn relevant_crates(&self, file_id: FileId) -> Arc<[CrateId]> {
         FileLoaderDelegate(self).relevant_crates(file_id)
     }
 }
@@ -86,7 +82,7 @@ impl TestDB {
         for &krate in self.relevant_crates(file_id).iter() {
             let crate_def_map = self.crate_def_map(krate);
             for (local_id, data) in crate_def_map.modules() {
-                if data.origin.file_id() == Some(file_id) {
+                if data.origin.file_id().map(EditionedFileId::file_id) == Some(file_id) {
                     return crate_def_map.module_id(local_id);
                 }
             }
@@ -95,7 +91,7 @@ impl TestDB {
     }
 
     pub(crate) fn module_at_position(&self, position: FilePosition) -> ModuleId {
-        let file_module = self.module_for_file(position.file_id);
+        let file_module = self.module_for_file(position.file_id.file_id());
         let mut def_map = file_module.def_map(self);
         let module = self.mod_at_position(&def_map, position);
 
@@ -111,7 +107,7 @@ impl TestDB {
                 }
                 _ => {
                     // FIXME: handle `mod` inside block expression
-                    return def_map.module_id(def_map.root());
+                    return def_map.module_id(DefMap::ROOT);
                 }
             }
         }
@@ -120,10 +116,10 @@ impl TestDB {
     /// Finds the smallest/innermost module in `def_map` containing `position`.
     fn mod_at_position(&self, def_map: &DefMap, position: FilePosition) -> LocalModuleId {
         let mut size = None;
-        let mut res = def_map.root();
+        let mut res = DefMap::ROOT;
         for (module, data) in def_map.modules() {
             let src = data.definition_source(self);
-            if src.file_id != position.file_id.into() {
+            if src.file_id != position.file_id {
                 continue;
             }
 
@@ -149,7 +145,6 @@ impl TestDB {
             };
 
             if size != Some(new_size) {
-                cov_mark::hit!(submodule_in_testdb);
                 size = Some(new_size);
                 res = module;
             }
@@ -164,7 +159,7 @@ impl TestDB {
         let mut fn_def = None;
         for (_, module) in def_map.modules() {
             let file_id = module.definition_source(self).file_id;
-            if file_id != position.file_id.into() {
+            if file_id != position.file_id {
                 continue;
             }
             for decl in module.scope.declarations() {
@@ -209,13 +204,11 @@ impl TestDB {
             });
 
         for scope in scope_iter {
-            let containing_blocks =
+            let mut containing_blocks =
                 scopes.scope_chain(Some(scope)).filter_map(|scope| scopes.block(scope));
 
-            for block in containing_blocks {
-                if let Some(def_map) = self.block_def_map(block) {
-                    return Some(def_map);
-                }
+            if let Some(block) = containing_blocks.next().map(|block| self.block_def_map(block)) {
+                return Some(block);
             }
         }
 

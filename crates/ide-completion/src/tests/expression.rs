@@ -1,16 +1,11 @@
 //! Completion tests for expressions.
 use expect_test::{expect, Expect};
 
-use crate::tests::{check_edit, completion_list, BASE_ITEMS_FIXTURE};
+use crate::tests::{check_edit, check_empty, completion_list, BASE_ITEMS_FIXTURE};
 
 fn check(ra_fixture: &str, expect: Expect) {
     let actual = completion_list(&format!("{BASE_ITEMS_FIXTURE}{ra_fixture}"));
     expect.assert_eq(&actual)
-}
-
-fn check_empty(ra_fixture: &str, expect: Expect) {
-    let actual = completion_list(ra_fixture);
-    expect.assert_eq(&actual);
 }
 
 #[test]
@@ -31,22 +26,22 @@ fn baz() {
             "#,
         // This should not contain `FooDesc {…}`.
         expect![[r#"
-            ct CONST
-            en Enum
+            ct CONST         Unit
+            en Enum          Enum
             fn baz()         fn()
             fn create_foo(…) fn(&FooDesc)
             fn function()    fn()
             ma makro!(…)     macro_rules! makro
             md _69latrick
             md module
-            sc STATIC
-            st FooDesc
-            st Record
-            st Tuple
-            st Unit
-            un Union
+            sc STATIC        Unit
+            st FooDesc       FooDesc
+            st Record        Record
+            st Tuple         Tuple
+            st Unit          Unit
+            un Union         Union
             ev TupleV(…)     TupleV(u32)
-            bt u32
+            bt u32           u32
             kw crate::
             kw false
             kw for
@@ -88,7 +83,7 @@ fn func(param0 @ (param1, param2): (i32, i32)) {
             lc param0     (i32, i32)
             lc param1     i32
             lc param2     i32
-            bt u32
+            bt u32        u32
             kw crate::
             kw false
             kw for
@@ -102,6 +97,11 @@ fn func(param0 @ (param1, param2): (i32, i32)) {
             kw unsafe
             kw while
             kw while let
+            ex ifletlocal
+            ex letlocal
+            ex matcharm
+            ex param1
+            ex param2
         "#]],
     );
 }
@@ -110,7 +110,7 @@ fn func(param0 @ (param1, param2): (i32, i32)) {
 fn completes_all_the_things_in_fn_body() {
     check(
         r#"
-use non_existant::Unresolved;
+use non_existent::Unresolved;
 mod qualified { pub enum Enum { Variant } }
 
 impl Unit {
@@ -122,24 +122,26 @@ impl Unit {
 "#,
         // `self` is in here twice, once as the module, once as the local
         expect![[r#"
-            ct CONST
+            ct CONST        Unit
             cp CONST_PARAM
-            en Enum
+            en Enum         Enum
             fn function()   fn()
             fn local_func() fn()
+            me self.foo()   fn(self)
             lc self         Unit
             ma makro!(…)    macro_rules! makro
             md module
             md qualified
-            sp Self
-            sc STATIC
-            st Record
-            st Tuple
-            st Unit
+            sp Self         Unit
+            sc STATIC       Unit
+            st Record       Record
+            st Tuple        Tuple
+            st Unit         Unit
             tp TypeParam
-            un Union
+            un Union        Union
             ev TupleV(…)    TupleV(u32)
-            bt u32
+            bt u32          u32
+            kw async
             kw const
             kw crate::
             kw enum
@@ -166,7 +168,6 @@ impl Unit {
             kw use
             kw while
             kw while let
-            me self.foo()   fn(self)
             sn macro_rules
             sn pd
             sn ppd
@@ -175,7 +176,7 @@ impl Unit {
     );
     check(
         r#"
-use non_existant::Unresolved;
+use non_existent::Unresolved;
 mod qualified { pub enum Enum { Variant } }
 
 impl Unit {
@@ -186,18 +187,18 @@ impl Unit {
 }
 "#,
         expect![[r#"
-            ct CONST
-            en Enum
+            ct CONST      Unit
+            en Enum       Enum
             fn function() fn()
             ma makro!(…)  macro_rules! makro
             md module
             md qualified
-            sc STATIC
-            st Record
-            st Tuple
-            st Unit
+            sc STATIC     Unit
+            st Record     Record
+            st Tuple      Tuple
+            st Unit       Unit
             tt Trait
-            un Union
+            un Union      Union
             ev TupleV(…)  TupleV(u32)
             ?? Unresolved
         "#]],
@@ -216,7 +217,8 @@ fn complete_in_block() {
 "#,
         expect![[r#"
             fn foo()       fn()
-            bt u32
+            bt u32         u32
+            kw async
             kw const
             kw crate::
             kw enum
@@ -246,6 +248,8 @@ fn complete_in_block() {
             sn macro_rules
             sn pd
             sn ppd
+            ex false
+            ex true
         "#]],
     )
 }
@@ -261,7 +265,8 @@ fn complete_after_if_expr() {
 "#,
         expect![[r#"
             fn foo()       fn()
-            bt u32
+            bt u32         u32
+            kw async
             kw const
             kw crate::
             kw else
@@ -309,7 +314,7 @@ fn complete_in_match_arm() {
 "#,
         expect![[r#"
             fn foo()     fn()
-            bt u32
+            bt u32       u32
             kw crate::
             kw false
             kw for
@@ -333,7 +338,8 @@ fn completes_in_loop_ctx() {
         r"fn my() { loop { $0 } }",
         expect![[r#"
             fn my()        fn()
-            bt u32
+            bt u32         u32
+            kw async
             kw break
             kw const
             kw continue
@@ -367,6 +373,27 @@ fn completes_in_loop_ctx() {
             sn ppd
         "#]],
     );
+    check_empty(
+        r"fn my() { loop { foo.$0 } }",
+        expect![[r#"
+            sn box    Box::new(expr)
+            sn break  break expr
+            sn call   function(expr)
+            sn dbg    dbg!(expr)
+            sn dbgr   dbg!(&expr)
+            sn deref  *expr
+            sn if     if expr {}
+            sn let    let
+            sn letm   let mut
+            sn match  match expr {}
+            sn not    !expr
+            sn ref    &expr
+            sn refm   &mut expr
+            sn return return expr
+            sn unsafe unsafe {}
+            sn while  while expr {}
+        "#]],
+    );
 }
 
 #[test]
@@ -375,7 +402,7 @@ fn completes_in_let_initializer() {
         r#"fn main() { let _ = $0 }"#,
         expect![[r#"
             fn main()    fn()
-            bt u32
+            bt u32       u32
             kw crate::
             kw false
             kw for
@@ -408,8 +435,8 @@ fn foo() {
 "#,
         expect![[r#"
             fn foo()     fn()
-            st Foo
-            bt u32
+            st Foo       Foo
+            bt u32       u32
             kw crate::
             kw false
             kw for
@@ -444,7 +471,7 @@ fn foo() {
         expect![[r#"
             fn foo()     fn()
             lc bar       i32
-            bt u32
+            bt u32       u32
             kw crate::
             kw false
             kw for
@@ -475,7 +502,7 @@ fn quux(x: i32) {
             fn quux(…)   fn(i32)
             lc x         i32
             ma m!(…)     macro_rules! m
-            bt u32
+            bt u32       u32
             kw crate::
             kw false
             kw for
@@ -502,7 +529,7 @@ fn quux(x: i32) {
             fn quux(…)   fn(i32)
             lc x         i32
             ma m!(…)     macro_rules! m
-            bt u32
+            bt u32       u32
             kw crate::
             kw false
             kw for
@@ -526,7 +553,26 @@ fn quux(x: i32) {
     m!(x$0
 }
 "#,
-        expect![[r#""#]],
+        expect![[r#"
+            fn quux(…)   fn(i32)
+            lc x         i32
+            lc y         i32
+            ma m!(…)     macro_rules! m
+            bt u32       u32
+            kw crate::
+            kw false
+            kw for
+            kw if
+            kw if let
+            kw loop
+            kw match
+            kw return
+            kw self::
+            kw true
+            kw unsafe
+            kw while
+            kw while let
+        "#]],
     );
 }
 
@@ -666,13 +712,15 @@ fn main() {
 }
 "#,
         expect![[r#"
-            fn test() fn() -> Zulu
+            fn test()       fn() -> Zulu
+            ex Zulu
+            ex Zulu::test()
         "#]],
     );
 }
 
 #[test]
-fn varaiant_with_struct() {
+fn variant_with_struct() {
     check_empty(
         r#"
 pub struct YoloVariant {
@@ -688,11 +736,11 @@ fn brr() {
 }
 "#,
         expect![[r#"
-            en HH
+            en HH              HH
             fn brr()           fn()
-            st YoloVariant
+            st YoloVariant     YoloVariant
             st YoloVariant {…} YoloVariant { f: usize }
-            bt u32
+            bt u32             u32
             kw crate::
             kw false
             kw for
@@ -743,5 +791,532 @@ fn return_value_no_block() {
         "return",
         r#"fn f() -> i32 { match () { () => $0 } }"#,
         r#"fn f() -> i32 { match () { () => return $0 } }"#,
+    );
+}
+
+#[test]
+fn else_completion_after_if() {
+    check_empty(
+        r#"
+fn foo() { if foo {} $0 }
+"#,
+        expect![[r#"
+            fn foo()       fn()
+            bt u32         u32
+            kw async
+            kw const
+            kw crate::
+            kw else
+            kw else if
+            kw enum
+            kw extern
+            kw false
+            kw fn
+            kw for
+            kw if
+            kw if let
+            kw impl
+            kw let
+            kw loop
+            kw match
+            kw mod
+            kw return
+            kw self::
+            kw static
+            kw struct
+            kw trait
+            kw true
+            kw type
+            kw union
+            kw unsafe
+            kw use
+            kw while
+            kw while let
+            sn macro_rules
+            sn pd
+            sn ppd
+        "#]],
+    );
+    check_empty(
+        r#"
+fn foo() { if foo {} el$0 }
+"#,
+        expect![[r#"
+            fn foo()       fn()
+            bt u32         u32
+            kw async
+            kw const
+            kw crate::
+            kw else
+            kw else if
+            kw enum
+            kw extern
+            kw false
+            kw fn
+            kw for
+            kw if
+            kw if let
+            kw impl
+            kw let
+            kw loop
+            kw match
+            kw mod
+            kw return
+            kw self::
+            kw static
+            kw struct
+            kw trait
+            kw true
+            kw type
+            kw union
+            kw unsafe
+            kw use
+            kw while
+            kw while let
+            sn macro_rules
+            sn pd
+            sn ppd
+        "#]],
+    );
+    check_empty(
+        r#"
+fn foo() { bar(if foo {} $0) }
+"#,
+        expect![[r#"
+            fn foo()     fn()
+            bt u32       u32
+            kw crate::
+            kw else
+            kw else if
+            kw false
+            kw for
+            kw if
+            kw if let
+            kw loop
+            kw match
+            kw return
+            kw self::
+            kw true
+            kw unsafe
+            kw while
+            kw while let
+        "#]],
+    );
+    check_empty(
+        r#"
+fn foo() { bar(if foo {} el$0) }
+"#,
+        expect![[r#"
+            fn foo()     fn()
+            bt u32       u32
+            kw crate::
+            kw else
+            kw else if
+            kw false
+            kw for
+            kw if
+            kw if let
+            kw loop
+            kw match
+            kw return
+            kw self::
+            kw true
+            kw unsafe
+            kw while
+            kw while let
+        "#]],
+    );
+    check_empty(
+        r#"
+fn foo() { if foo {} $0 let x = 92; }
+"#,
+        expect![[r#"
+            fn foo()       fn()
+            bt u32         u32
+            kw async
+            kw const
+            kw crate::
+            kw else
+            kw else if
+            kw enum
+            kw extern
+            kw false
+            kw fn
+            kw for
+            kw if
+            kw if let
+            kw impl
+            kw let
+            kw loop
+            kw match
+            kw mod
+            kw return
+            kw self::
+            kw static
+            kw struct
+            kw trait
+            kw true
+            kw type
+            kw union
+            kw unsafe
+            kw use
+            kw while
+            kw while let
+            sn macro_rules
+            sn pd
+            sn ppd
+        "#]],
+    );
+    check_empty(
+        r#"
+fn foo() { if foo {} el$0 let x = 92; }
+"#,
+        expect![[r#"
+            fn foo()       fn()
+            bt u32         u32
+            kw async
+            kw const
+            kw crate::
+            kw else
+            kw else if
+            kw enum
+            kw extern
+            kw false
+            kw fn
+            kw for
+            kw if
+            kw if let
+            kw impl
+            kw let
+            kw loop
+            kw match
+            kw mod
+            kw return
+            kw self::
+            kw static
+            kw struct
+            kw trait
+            kw true
+            kw type
+            kw union
+            kw unsafe
+            kw use
+            kw while
+            kw while let
+            sn macro_rules
+            sn pd
+            sn ppd
+        "#]],
+    );
+    check_empty(
+        r#"
+fn foo() { if foo {} el$0 { let x = 92; } }
+"#,
+        expect![[r#"
+            fn foo()       fn()
+            bt u32         u32
+            kw async
+            kw const
+            kw crate::
+            kw else
+            kw else if
+            kw enum
+            kw extern
+            kw false
+            kw fn
+            kw for
+            kw if
+            kw if let
+            kw impl
+            kw let
+            kw loop
+            kw match
+            kw mod
+            kw return
+            kw self::
+            kw static
+            kw struct
+            kw trait
+            kw true
+            kw type
+            kw union
+            kw unsafe
+            kw use
+            kw while
+            kw while let
+            sn macro_rules
+            sn pd
+            sn ppd
+        "#]],
+    );
+}
+
+#[test]
+fn expr_no_unstable_item_on_stable() {
+    check_empty(
+        r#"
+//- /main.rs crate:main deps:std
+use std::*;
+fn main() {
+    $0
+}
+//- /std.rs crate:std
+#[unstable]
+pub struct UnstableThisShouldNotBeListed;
+"#,
+        expect![[r#"
+            fn main()      fn()
+            md std
+            bt u32         u32
+            kw async
+            kw const
+            kw crate::
+            kw enum
+            kw extern
+            kw false
+            kw fn
+            kw for
+            kw if
+            kw if let
+            kw impl
+            kw let
+            kw loop
+            kw match
+            kw mod
+            kw return
+            kw self::
+            kw static
+            kw struct
+            kw trait
+            kw true
+            kw type
+            kw union
+            kw unsafe
+            kw use
+            kw while
+            kw while let
+            sn macro_rules
+            sn pd
+            sn ppd
+        "#]],
+    );
+}
+
+#[test]
+fn expr_unstable_item_on_nightly() {
+    check_empty(
+        r#"
+//- toolchain:nightly
+//- /main.rs crate:main deps:std
+use std::*;
+fn main() {
+    $0
+}
+//- /std.rs crate:std
+#[unstable]
+pub struct UnstableButWeAreOnNightlyAnyway;
+"#,
+        expect![[r#"
+            fn main()                 fn()
+            md std
+            st UnstableButWeAreOnNightlyAnyway UnstableButWeAreOnNightlyAnyway
+            bt u32                    u32
+            kw async
+            kw const
+            kw crate::
+            kw enum
+            kw extern
+            kw false
+            kw fn
+            kw for
+            kw if
+            kw if let
+            kw impl
+            kw let
+            kw loop
+            kw match
+            kw mod
+            kw return
+            kw self::
+            kw static
+            kw struct
+            kw trait
+            kw true
+            kw type
+            kw union
+            kw unsafe
+            kw use
+            kw while
+            kw while let
+            sn macro_rules
+            sn pd
+            sn ppd
+        "#]],
+    );
+}
+
+#[test]
+fn inside_format_args_completions_work() {
+    check_empty(
+        r#"
+//- minicore: fmt
+struct Foo;
+impl Foo {
+    fn foo(&self) {}
+}
+
+fn main() {
+    format_args!("{}", Foo.$0);
+}
+"#,
+        expect![[r#"
+            me foo()  fn(&self)
+            sn box    Box::new(expr)
+            sn call   function(expr)
+            sn dbg    dbg!(expr)
+            sn dbgr   dbg!(&expr)
+            sn deref  *expr
+            sn match  match expr {}
+            sn ref    &expr
+            sn refm   &mut expr
+            sn return return expr
+            sn unsafe unsafe {}
+        "#]],
+    );
+    check_empty(
+        r#"
+//- minicore: fmt
+struct Foo;
+impl Foo {
+    fn foo(&self) {}
+}
+
+fn main() {
+    format_args!("{}", Foo.f$0);
+}
+"#,
+        expect![[r#"
+            me foo()  fn(&self)
+            sn box    Box::new(expr)
+            sn call   function(expr)
+            sn dbg    dbg!(expr)
+            sn dbgr   dbg!(&expr)
+            sn deref  *expr
+            sn match  match expr {}
+            sn ref    &expr
+            sn refm   &mut expr
+            sn return return expr
+            sn unsafe unsafe {}
+        "#]],
+    );
+}
+
+#[test]
+fn inside_faulty_format_args_completions_work() {
+    check_empty(
+        r#"
+//- minicore: fmt
+struct Foo;
+impl Foo {
+    fn foo(&self) {}
+}
+
+fn main() {
+    format_args!("", Foo.$0);
+}
+"#,
+        expect![[r#"
+            me foo()  fn(&self)
+            sn box    Box::new(expr)
+            sn call   function(expr)
+            sn dbg    dbg!(expr)
+            sn dbgr   dbg!(&expr)
+            sn deref  *expr
+            sn match  match expr {}
+            sn ref    &expr
+            sn refm   &mut expr
+            sn return return expr
+            sn unsafe unsafe {}
+        "#]],
+    );
+    check_empty(
+        r#"
+//- minicore: fmt
+struct Foo;
+impl Foo {
+    fn foo(&self) {}
+}
+
+fn main() {
+    format_args!("", Foo.f$0);
+}
+"#,
+        expect![[r#"
+            me foo()  fn(&self)
+            sn box    Box::new(expr)
+            sn call   function(expr)
+            sn dbg    dbg!(expr)
+            sn dbgr   dbg!(&expr)
+            sn deref  *expr
+            sn match  match expr {}
+            sn ref    &expr
+            sn refm   &mut expr
+            sn return return expr
+            sn unsafe unsafe {}
+        "#]],
+    );
+    check_empty(
+        r#"
+//- minicore: fmt
+struct Foo;
+impl Foo {
+    fn foo(&self) {}
+}
+
+fn main() {
+    format_args!("{} {named} {captured} {named} {}", a, named = c, Foo.f$0);
+}
+"#,
+        expect![[r#"
+            me foo()  fn(&self)
+            sn box    Box::new(expr)
+            sn call   function(expr)
+            sn dbg    dbg!(expr)
+            sn dbgr   dbg!(&expr)
+            sn deref  *expr
+            sn match  match expr {}
+            sn ref    &expr
+            sn refm   &mut expr
+            sn return return expr
+            sn unsafe unsafe {}
+        "#]],
+    );
+    check_empty(
+        r#"
+//- minicore: fmt
+struct Foo;
+impl Foo {
+    fn foo(&self) {}
+}
+
+fn main() {
+    format_args!("{", Foo.f$0);
+}
+"#,
+        expect![[r#"
+            sn box    Box::new(expr)
+            sn call   function(expr)
+            sn dbg    dbg!(expr)
+            sn dbgr   dbg!(&expr)
+            sn deref  *expr
+            sn if     if expr {}
+            sn match  match expr {}
+            sn not    !expr
+            sn ref    &expr
+            sn refm   &mut expr
+            sn return return expr
+            sn unsafe unsafe {}
+            sn while  while expr {}
+        "#]],
     );
 }

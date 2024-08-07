@@ -8,6 +8,7 @@ use limit::Limit;
 use crate::{
     event::Event,
     input::Input,
+    Edition,
     SyntaxKind::{self, EOF, ERROR, TOMBSTONE},
     TokenSet, T,
 };
@@ -26,13 +27,14 @@ pub(crate) struct Parser<'t> {
     pos: usize,
     events: Vec<Event>,
     steps: Cell<u32>,
+    edition: Edition,
 }
 
 static PARSER_STEP_LIMIT: Limit = Limit::new(15_000_000);
 
 impl<'t> Parser<'t> {
-    pub(super) fn new(inp: &'t Input) -> Parser<'t> {
-        Parser { inp, pos: 0, events: Vec::new(), steps: Cell::new(0) }
+    pub(super) fn new(inp: &'t Input, edition: Edition) -> Parser<'t> {
+        Parser { inp, pos: 0, events: Vec::new(), steps: Cell::new(0), edition }
     }
 
     pub(crate) fn finish(self) -> Vec<Event> {
@@ -181,6 +183,35 @@ impl<'t> Parser<'t> {
         self.do_bump(kind, 1);
     }
 
+    /// Advances the parser by one token
+    pub(crate) fn split_float(&mut self, mut marker: Marker) -> (bool, Marker) {
+        assert!(self.at(SyntaxKind::FLOAT_NUMBER));
+        // we have parse `<something>.`
+        // `<something>`.0.1
+        // here we need to insert an extra event
+        //
+        // `<something>`. 0. 1;
+        // here we need to change the follow up parse, the return value will cause us to emulate a dot
+        // the actual splitting happens later
+        let ends_in_dot = !self.inp.is_joint(self.pos);
+        if !ends_in_dot {
+            let new_marker = self.start();
+            let idx = marker.pos as usize;
+            match &mut self.events[idx] {
+                Event::Start { forward_parent, kind } => {
+                    *kind = SyntaxKind::FIELD_EXPR;
+                    *forward_parent = Some(new_marker.pos - marker.pos);
+                }
+                _ => unreachable!(),
+            }
+            marker.bomb.defuse();
+            marker = new_marker;
+        };
+        self.pos += 1;
+        self.push_event(Event::FloatSplitHack { ends_in_dot });
+        (ends_in_dot, marker)
+    }
+
     /// Advances the parser by one token, remapping its kind.
     /// This is useful to create contextual keywords from
     /// identifiers. For example, the lexer creates a `union`
@@ -221,12 +252,9 @@ impl<'t> Parser<'t> {
 
     /// Create an error node and consume the next token.
     pub(crate) fn err_recover(&mut self, message: &str, recovery: TokenSet) {
-        match self.current() {
-            T!['{'] | T!['}'] => {
-                self.error(message);
-                return;
-            }
-            _ => (),
+        if matches!(self.current(), T!['{'] | T!['}']) {
+            self.error(message);
+            return;
         }
 
         if self.at_ts(recovery) {
@@ -248,6 +276,10 @@ impl<'t> Parser<'t> {
 
     fn push_event(&mut self, event: Event) {
         self.events.push(event);
+    }
+
+    pub(crate) fn edition(&self) -> Edition {
+        self.edition
     }
 }
 

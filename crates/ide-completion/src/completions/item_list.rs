@@ -1,7 +1,7 @@
 //! Completion of paths and keywords at item list position.
 
 use crate::{
-    context::{ExprCtx, ItemListKind, PathCompletionCtx, Qualified},
+    context::{ItemListKind, PathCompletionCtx, PathExprCtx, Qualified},
     CompletionContext, Completions,
 };
 
@@ -11,7 +11,7 @@ pub(crate) fn complete_item_list_in_expr(
     acc: &mut Completions,
     ctx: &CompletionContext<'_>,
     path_ctx: &PathCompletionCtx,
-    expr_ctx: &ExprCtx,
+    expr_ctx: &PathExprCtx,
 ) {
     if !expr_ctx.in_block_expr {
         return;
@@ -28,7 +28,7 @@ pub(crate) fn complete_item_list(
     path_ctx @ PathCompletionCtx { qualified, .. }: &PathCompletionCtx,
     kind: &ItemListKind,
 ) {
-    let _p = profile::span("complete_item_list");
+    let _p = tracing::info_span!("complete_item_list").entered();
     if path_ctx.is_trivial_path() {
         add_keywords(acc, ctx, Some(kind));
     }
@@ -45,7 +45,7 @@ pub(crate) fn complete_item_list(
                         acc.add_macro(ctx, path_ctx, m, name)
                     }
                     hir::ScopeDef::ModuleDef(hir::ModuleDef::Module(m)) => {
-                        acc.add_module(ctx, path_ctx, m, name)
+                        acc.add_module(ctx, path_ctx, m, name, vec![])
                     }
                     _ => (),
                 }
@@ -55,12 +55,12 @@ pub(crate) fn complete_item_list(
         }
         Qualified::Absolute => acc.add_crate_roots(ctx, path_ctx),
         Qualified::No if ctx.qualifier_ctx.none() => {
-            ctx.process_all_names(&mut |name, def| match def {
+            ctx.process_all_names(&mut |name, def, doc_aliases| match def {
                 hir::ScopeDef::ModuleDef(hir::ModuleDef::Macro(m)) if m.is_fn_like(ctx.db) => {
                     acc.add_macro(ctx, path_ctx, m, name)
                 }
                 hir::ScopeDef::ModuleDef(hir::ModuleDef::Module(m)) => {
-                    acc.add_module(ctx, path_ctx, m, name)
+                    acc.add_module(ctx, path_ctx, m, name, doc_aliases)
                 }
                 _ => (),
             });
@@ -79,20 +79,33 @@ fn add_keywords(acc: &mut Completions, ctx: &CompletionContext<'_>, kind: Option
     let in_trait = matches!(kind, Some(ItemListKind::Trait));
     let in_trait_impl = matches!(kind, Some(ItemListKind::TraitImpl(_)));
     let in_inherent_impl = matches!(kind, Some(ItemListKind::Impl));
-    let no_qualifiers = ctx.qualifier_ctx.vis_node.is_none();
-    let in_block = matches!(kind, None);
+    let no_vis_qualifiers = ctx.qualifier_ctx.vis_node.is_none();
+    let in_block = kind.is_none();
+
+    let missing_qualifiers = [
+        ctx.qualifier_ctx.unsafe_tok.is_none().then_some(("unsafe", "unsafe $0")),
+        ctx.qualifier_ctx.async_tok.is_none().then_some(("async", "async $0")),
+    ];
 
     if !in_trait_impl {
-        if ctx.qualifier_ctx.unsafe_tok.is_some() {
+        // handle qualifier tokens
+        if missing_qualifiers.iter().any(Option::is_none) {
+            // only complete missing qualifiers
+            missing_qualifiers.iter().filter_map(|x| *x).for_each(|(kw, snippet)| {
+                add_keyword(kw, snippet);
+            });
+
             if in_item_list || in_assoc_non_trait_impl {
                 add_keyword("fn", "fn $1($2) {\n    $0\n}");
             }
-            if in_item_list {
+
+            if ctx.qualifier_ctx.unsafe_tok.is_some() && in_item_list {
                 add_keyword("trait", "trait $1 {\n    $0\n}");
-                if no_qualifiers {
+                if no_vis_qualifiers {
                     add_keyword("impl", "impl $1 {\n    $0\n}");
                 }
             }
+
             return;
         }
 
@@ -104,15 +117,15 @@ fn add_keywords(acc: &mut Completions, ctx: &CompletionContext<'_>, kind: Option
             add_keyword("trait", "trait $1 {\n    $0\n}");
             add_keyword("union", "union $1 {\n    $0\n}");
             add_keyword("use", "use $0");
-            if no_qualifiers {
+            if no_vis_qualifiers {
                 add_keyword("impl", "impl $1 {\n    $0\n}");
             }
         }
 
-        if !in_trait && !in_block && no_qualifiers {
-            add_keyword("pub(crate)", "pub(crate)");
-            add_keyword("pub(super)", "pub(super)");
-            add_keyword("pub", "pub");
+        if !in_trait && !in_block && no_vis_qualifiers {
+            add_keyword("pub(crate)", "pub(crate) $0");
+            add_keyword("pub(super)", "pub(super) $0");
+            add_keyword("pub", "pub $0");
         }
 
         if in_extern_block {
@@ -126,8 +139,9 @@ fn add_keywords(acc: &mut Completions, ctx: &CompletionContext<'_>, kind: Option
             }
 
             add_keyword("fn", "fn $1($2) {\n    $0\n}");
-            add_keyword("unsafe", "unsafe");
+            add_keyword("unsafe", "unsafe $0");
             add_keyword("const", "const $0");
+            add_keyword("async", "async $0");
         }
     }
 }

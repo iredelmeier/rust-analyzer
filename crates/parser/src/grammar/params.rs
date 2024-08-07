@@ -1,3 +1,5 @@
+use crate::grammar::attributes::ATTRIBUTE_FIRST;
+
 use super::*;
 
 // test param_list
@@ -5,6 +7,9 @@ use super::*;
 // fn b(x: i32) {}
 // fn c(x: i32, ) {}
 // fn d(x: i32, y: ()) {}
+
+// test_err empty_param_slot
+// fn f(y: i32, ,t: i32) {}
 pub(super) fn param_list_fn_def(p: &mut Parser<'_>) {
     list_(p, Flavor::FnDef);
 }
@@ -66,14 +71,21 @@ fn list_(p: &mut Parser<'_>, flavor: Flavor) {
             }
         };
 
-        if !p.at_ts(PARAM_FIRST) {
+        if !p.at_ts(PARAM_FIRST.union(ATTRIBUTE_FIRST)) {
             p.error("expected value parameter");
             m.abandon(p);
+            if p.eat(T![,]) {
+                continue;
+            }
             break;
         }
         param(p, m, flavor);
-        if !p.at(ket) {
-            p.expect(T![,]);
+        if !p.eat(T![,]) {
+            if p.at_ts(PARAM_FIRST.union(ATTRIBUTE_FIRST)) {
+                p.error("expected `,`");
+            } else {
+                break;
+            }
         }
     }
 

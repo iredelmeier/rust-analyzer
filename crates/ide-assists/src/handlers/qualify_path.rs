@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::iter;
 
 use hir::AsAssocItem;
@@ -6,6 +7,7 @@ use ide_db::{
     helpers::mod_path_to_ast,
     imports::import_assets::{ImportCandidate, LocatedImport},
 };
+use syntax::ast::HasGenericArgs;
 use syntax::{
     ast,
     ast::{make, HasArgList},
@@ -37,18 +39,16 @@ use crate::{
 // ```
 pub(crate) fn qualify_path(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
     let (import_assets, syntax_under_caret) = find_importable_node(ctx)?;
-    let mut proposed_imports =
-        import_assets.search_for_relative_paths(&ctx.sema, ctx.config.prefer_no_std);
+    let cfg = ctx.config.import_path_config();
+
+    let mut proposed_imports: Vec<_> =
+        import_assets.search_for_relative_paths(&ctx.sema, cfg).collect();
     if proposed_imports.is_empty() {
         return None;
     }
 
-    let range = match &syntax_under_caret {
-        NodeOrToken::Node(node) => ctx.sema.original_range(node).range,
-        NodeOrToken::Token(token) => token.text_range(),
-    };
     let candidate = import_assets.import_candidate();
-    let qualify_candidate = match syntax_under_caret {
+    let qualify_candidate = match syntax_under_caret.clone() {
         NodeOrToken::Node(syntax_under_caret) => match candidate {
             ImportCandidate::Path(candidate) if candidate.qualifier.is_some() => {
                 cov_mark::hit!(qualify_path_qualifier_start);
@@ -79,14 +79,31 @@ pub(crate) fn qualify_path(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option
     };
 
     // we aren't interested in different namespaces
+    proposed_imports.sort_by(|a, b| a.import_path.cmp(&b.import_path));
     proposed_imports.dedup_by(|a, b| a.import_path == b.import_path);
+
+    let range = match &syntax_under_caret {
+        NodeOrToken::Node(node) => ctx.sema.original_range(node).range,
+        NodeOrToken::Token(token) => token.text_range(),
+    };
+    let current_module = ctx
+        .sema
+        .scope(&match syntax_under_caret {
+            NodeOrToken::Node(node) => node.clone(),
+            NodeOrToken::Token(t) => t.parent()?,
+        })
+        .map(|scope| scope.module());
+    // prioritize more relevant imports
+    proposed_imports.sort_by_key(|import| {
+        Reverse(super::auto_import::relevance_score(ctx, import, current_module.as_ref()))
+    });
 
     let group_label = group_label(candidate);
     for import in proposed_imports {
         acc.add_group(
             &group_label,
             AssistId("qualify_path", AssistKind::QuickFix),
-            label(candidate, &import),
+            label(ctx.db(), candidate, &import),
             range,
             |builder| {
                 qualify_candidate.qualify(
@@ -186,7 +203,7 @@ fn find_trait_method(
     if let Some(hir::AssocItem::Function(method)) =
         trait_.items(db).into_iter().find(|item: &hir::AssocItem| {
             item.name(db)
-                .map(|name| name.to_string() == trait_method_name.to_string())
+                .map(|name| name.display(db).to_string() == trait_method_name.to_string())
                 .unwrap_or(false)
         })
     {
@@ -201,7 +218,7 @@ fn item_as_trait(db: &RootDatabase, item: hir::ItemInNs) -> Option<hir::Trait> {
 
     match item_module_def {
         hir::ModuleDef::Trait(trait_) => Some(trait_),
-        _ => item_module_def.as_assoc_item(db)?.containing_trait(db),
+        _ => item_module_def.as_assoc_item(db)?.container_trait(db),
     }
 }
 
@@ -216,14 +233,14 @@ fn group_label(candidate: &ImportCandidate) -> GroupLabel {
     GroupLabel(format!("Qualify {name}"))
 }
 
-fn label(candidate: &ImportCandidate, import: &LocatedImport) -> String {
+fn label(db: &RootDatabase, candidate: &ImportCandidate, import: &LocatedImport) -> String {
     let import_path = &import.import_path;
 
     match candidate {
         ImportCandidate::Path(candidate) if candidate.qualifier.is_none() => {
-            format!("Qualify as `{import_path}`")
+            format!("Qualify as `{}`", import_path.display(db))
         }
-        _ => format!("Qualify with `{import_path}`"),
+        _ => format!("Qualify with `{}`", import_path.display(db)),
     }
 }
 

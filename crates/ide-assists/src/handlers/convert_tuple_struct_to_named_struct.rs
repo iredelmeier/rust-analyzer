@@ -50,7 +50,8 @@ pub(crate) fn convert_tuple_struct_to_named_struct(
     acc: &mut Assists,
     ctx: &AssistContext<'_>,
 ) -> Option<()> {
-    let strukt = ctx.find_node_at_offset::<Either<ast::Struct, ast::Variant>>()?;
+    let name = ctx.find_node_at_offset::<ast::Name>()?;
+    let strukt = name.syntax().parent().and_then(<Either<ast::Struct, ast::Variant>>::cast)?;
     let field_list = strukt.as_ref().either(|s| s.field_list(), |v| v.field_list())?;
     let tuple_fields = match field_list {
         ast::FieldList::TupleFieldList(it) => it,
@@ -144,7 +145,7 @@ fn edit_struct_references(
                                         pat,
                                     )
                                 },
-                            )),
+                            ), None),
                         )
                         .to_string(),
                     );
@@ -187,7 +188,7 @@ fn edit_struct_references(
     };
 
     for (file_id, refs) in usages {
-        edit.edit_file(file_id);
+        edit.edit_file(file_id.file_id());
         for r in refs {
             for node in r.name.syntax().ancestors() {
                 if edit_node(edit, node).is_some() {
@@ -212,10 +213,10 @@ fn edit_field_references(
         let def = Definition::Field(field);
         let usages = def.usages(&ctx.sema).all();
         for (file_id, refs) in usages {
-            edit.edit_file(file_id);
+            edit.edit_file(file_id.file_id());
             for r in refs {
                 if let Some(name_ref) = r.name.as_name_ref() {
-                    edit.replace(name_ref.syntax().text_range(), name.text());
+                    edit.replace(ctx.sema.original_range(name_ref.syntax()).range, name.text());
                 }
             }
         }

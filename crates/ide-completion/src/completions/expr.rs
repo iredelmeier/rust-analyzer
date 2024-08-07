@@ -1,11 +1,11 @@
 //! Completion of names from the current scope in expression position.
 
-use hir::ScopeDef;
+use hir::{sym, ImportPathConfig, Name, ScopeDef};
 use syntax::ast;
 
 use crate::{
     completions::record::add_default_update,
-    context::{ExprCtx, PathCompletionCtx, Qualified},
+    context::{BreakableKind, PathCompletionCtx, PathExprCtx, Qualified},
     CompletionContext, Completions,
 };
 
@@ -13,16 +13,16 @@ pub(crate) fn complete_expr_path(
     acc: &mut Completions,
     ctx: &CompletionContext<'_>,
     path_ctx @ PathCompletionCtx { qualified, .. }: &PathCompletionCtx,
-    expr_ctx: &ExprCtx,
+    expr_ctx: &PathExprCtx,
 ) {
-    let _p = profile::span("complete_expr_path");
+    let _p = tracing::info_span!("complete_expr_path").entered();
     if !ctx.qualifier_ctx.none() {
         return;
     }
 
-    let &ExprCtx {
+    let &PathExprCtx {
         in_block_expr,
-        in_loop_body,
+        in_breakable,
         after_if_expr,
         in_condition,
         incomplete_let,
@@ -88,7 +88,13 @@ pub(crate) fn complete_expr_path(
                     let module_scope = module.scope(ctx.db, Some(ctx.module));
                     for (name, def) in module_scope {
                         if scope_def_applicable(def) {
-                            acc.add_path_resolution(ctx, path_ctx, name, def);
+                            acc.add_path_resolution(
+                                ctx,
+                                path_ctx,
+                                name,
+                                def,
+                                ctx.doc_aliases_in_scope(def),
+                            );
                         }
                     }
                 }
@@ -165,10 +171,14 @@ pub(crate) fn complete_expr_path(
                     hir::Adt::Struct(strukt) => {
                         let path = ctx
                             .module
-                            .find_use_path(
+                            .find_path(
                                 ctx.db,
                                 hir::ModuleDef::from(strukt),
-                                ctx.config.prefer_no_std,
+                                ImportPathConfig {
+                                    prefer_no_std: ctx.config.prefer_no_std,
+                                    prefer_prelude: ctx.config.prefer_prelude,
+                                    prefer_absolute: ctx.config.prefer_absolute,
+                                },
                             )
                             .filter(|it| it.len() > 1);
 
@@ -180,23 +190,32 @@ pub(crate) fn complete_expr_path(
                                 path_ctx,
                                 strukt,
                                 None,
-                                Some(hir::known::SELF_TYPE),
+                                Some(Name::new_symbol_root(sym::Self_.clone())),
                             );
                         }
                     }
                     hir::Adt::Union(un) => {
                         let path = ctx
                             .module
-                            .find_use_path(
+                            .find_path(
                                 ctx.db,
                                 hir::ModuleDef::from(un),
-                                ctx.config.prefer_no_std,
+                                ImportPathConfig {
+                                    prefer_no_std: ctx.config.prefer_no_std,
+                                    prefer_prelude: ctx.config.prefer_prelude,
+                                    prefer_absolute: ctx.config.prefer_absolute,
+                                },
                             )
                             .filter(|it| it.len() > 1);
 
                         acc.add_union_literal(ctx, un, path, None);
                         if complete_self {
-                            acc.add_union_literal(ctx, un, None, Some(hir::known::SELF_TYPE));
+                            acc.add_union_literal(
+                                ctx,
+                                un,
+                                None,
+                                Some(Name::new_symbol_root(sym::Self_.clone())),
+                            );
                         }
                     }
                     hir::Adt::Enum(e) => {
@@ -212,7 +231,7 @@ pub(crate) fn complete_expr_path(
                     }
                 }
             }
-            ctx.process_all_names(&mut |name, def| match def {
+            ctx.process_all_names(&mut |name, def, doc_aliases| match def {
                 ScopeDef::ModuleDef(hir::ModuleDef::Trait(t)) => {
                     let assocs = t.items_with_supertraits(ctx.db);
                     match &*assocs {
@@ -220,12 +239,14 @@ pub(crate) fn complete_expr_path(
                         // there is no associated item path that can be constructed with them
                         [] => (),
                         // FIXME: Render the assoc item with the trait qualified
-                        &[_item] => acc.add_path_resolution(ctx, path_ctx, name, def),
+                        &[_item] => acc.add_path_resolution(ctx, path_ctx, name, def, doc_aliases),
                         // FIXME: Append `::` to the thing here, since a trait on its own won't work
-                        [..] => acc.add_path_resolution(ctx, path_ctx, name, def),
+                        [..] => acc.add_path_resolution(ctx, path_ctx, name, def, doc_aliases),
                     }
                 }
-                _ if scope_def_applicable(def) => acc.add_path_resolution(ctx, path_ctx, name, def),
+                _ if scope_def_applicable(def) => {
+                    acc.add_path_resolution(ctx, path_ctx, name, def, doc_aliases)
+                }
                 _ => (),
             });
 
@@ -280,7 +301,7 @@ pub(crate) fn complete_expr_path(
                         add_keyword("mut", "mut ");
                     }
 
-                    if in_loop_body {
+                    if in_breakable != BreakableKind::None {
                         if in_block_expr {
                             add_keyword("continue", "continue;");
                             add_keyword("break", "break;");
@@ -314,6 +335,62 @@ pub(crate) fn complete_expr_path(
                         );
                     }
                 }
+            }
+        }
+    }
+}
+
+pub(crate) fn complete_expr(acc: &mut Completions, ctx: &CompletionContext<'_>) {
+    let _p = tracing::info_span!("complete_expr").entered();
+
+    if !ctx.config.enable_term_search {
+        return;
+    }
+
+    if !ctx.qualifier_ctx.none() {
+        return;
+    }
+
+    if let Some(ty) = &ctx.expected_type {
+        // Ignore unit types as they are not very interesting
+        if ty.is_unit() || ty.is_unknown() {
+            return;
+        }
+
+        let term_search_ctx = hir::term_search::TermSearchCtx {
+            sema: &ctx.sema,
+            scope: &ctx.scope,
+            goal: ty.clone(),
+            config: hir::term_search::TermSearchConfig {
+                enable_borrowcheck: false,
+                many_alternatives_threshold: 1,
+                fuel: 200,
+            },
+        };
+        let exprs = hir::term_search::term_search(&term_search_ctx);
+        for expr in exprs {
+            // Expand method calls
+            match expr {
+                hir::term_search::Expr::Method { func, generics, target, params }
+                    if target.is_many() =>
+                {
+                    let target_ty = target.ty(ctx.db);
+                    let term_search_ctx =
+                        hir::term_search::TermSearchCtx { goal: target_ty, ..term_search_ctx };
+                    let target_exprs = hir::term_search::term_search(&term_search_ctx);
+
+                    for expr in target_exprs {
+                        let expanded_expr = hir::term_search::Expr::Method {
+                            func,
+                            generics: generics.clone(),
+                            target: Box::new(expr),
+                            params: params.clone(),
+                        };
+
+                        acc.add_expr(ctx, &expanded_expr)
+                    }
+                }
+                _ => acc.add_expr(ctx, &expr),
             }
         }
     }
